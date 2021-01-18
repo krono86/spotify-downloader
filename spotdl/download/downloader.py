@@ -10,8 +10,8 @@ from pathlib import Path
 
 from pytube import YouTube
 
-from mutagen.easyid3 import EasyID3, ID3
-from mutagen.id3 import APIC as AlbumCover
+from mutagen.oggopus import OggOpus
+from mutagen.flac import Picture
 
 from urllib.request import urlopen
 
@@ -154,7 +154,7 @@ class DownloadManager():
         convertedFileName = convertedFileName.replace(
             '"', "'").replace(':', '-')
 
-        convertedFilePath = Path(".", f"{convertedFileName}.mp3")
+        convertedFilePath = Path(".", f"{convertedFileName}.opus")
 
         # if a song is already downloaded skip it
         if convertedFilePath.is_file():
@@ -192,31 +192,12 @@ class DownloadManager():
 
         downloadedFilePath = Path(downloadedFilePathString)
 
-        # convert downloaded file to MP3 with normalization
+        # Encapsulate downloaded file to OGG
 
-        #! -af loudnorm=I=-7:LRA applies EBR 128 loudness normalization algorithm with
-        #! intergrated loudness target (I) set to -17, using values lower than -15
-        #! causes 'pumping' i.e. rhythmic variation in loudness that should not
-        #! exist -loud parts exaggerate, soft parts left alone.
-        #!
-        #! dynaudnorm applies dynamic non-linear RMS based normalization, this is what
-        #! actually normalized the audio. The loudnorm filter just makes the apparent
-        #! loudness constant
-        #!
-        #! apad=pad_dur=2 adds 2 seconds of silence toward the end of the track, this is
-        #! done because the loudnorm filter clips/cuts/deletes the last 1-2 seconds on
-        #! occasion especially if the song is EDM-like, so we add a few extra seconds to
-        #! combat that.
-        #!
-        #! -acodec libmp3lame sets the encoded to 'libmp3lame' which is far better
-        #! than the default 'mp3_mf', '-abr true' automatically determines and passes the
-        #! audio encoding bitrate to the filters and encoder. This ensures that the
-        #! sampled length of songs matches the actual length (i.e. a 5 min song won't display
-        #! as 47 seconds long in your music player, yeah that was an issue earlier.)
+        #! spotdl dowbloads are codified as opus audio streams encapsulated into webm 
+        #! ogg container is needed to add ogg vorbis tags
 
-        command = 'ffmpeg -v quiet -y -i "%s" -acodec libmp3lame -abr true ' \
-            f'-b:a {trackAudioStream.bitrate} ' \
-                  '-af "apad=pad_dur=2, dynaudnorm, loudnorm=I=-17" "%s"'
+        command = 'ffmpeg -v quiet -y -i "%s" -acodec copy "%s"'
 
         #! bash/ffmpeg on Unix systems need to have excape char (\) for special characters: \$
         #! alternatively the quotes could be reversed (single <-> double) in the command then
@@ -244,7 +225,7 @@ class DownloadManager():
         if self.displayManager:
             self.displayManager.notify_conversion_completion()
 
-        self.set_id3_data(convertedFilePath, songObj)
+        self.set_vorbis_data(convertedFilePath, songObj)
 
         # Do the necessary cleanup
         if self.displayManager:
@@ -257,12 +238,10 @@ class DownloadManager():
         if downloadedFilePath and downloadedFilePath.is_file():
             downloadedFilePath.unlink()
 
-    def set_id3_data(self, convertedFilePath, songObj):
+    def set_vorbis_data(self, convertedFilePath, songObj):
         # embed song details
-        # ! we save tags as both ID3 v2.3 and v2.4
-        # ! The simple ID3 tags
-        audioFile = EasyID3(convertedFilePath)
-        # ! Get rid of all existing ID3 tags (if any exist)
+        audioFile = OggOpus(convertedFilePath)
+        # ! Get rid of all existing Vorbis tags (if any exist)
         audioFile.delete()
         # ! song name
         audioFile['title'] = songObj.get_song_name()
@@ -284,20 +263,19 @@ class DownloadManager():
         # ! album release date (to what ever precision available)
         audioFile['date'] = songObj.get_album_release()
         audioFile['originaldate'] = songObj.get_album_release()
-        # ! save as both ID3 v2.3 & v2.4 as v2.3 isn't fully features and
-        # ! windows doesn't support v2.4 until later versions of Win10
-        audioFile.save(v2_version=3)
         # ! setting the album art
-        audioFile = ID3(convertedFilePath)
+        audioFile = OggOpus(convertedFilePath)
         rawAlbumArt = urlopen(songObj.get_album_cover_url()).read()
-        audioFile['APIC'] = AlbumCover(
-            encoding=3,
-            mime='image/jpeg',
-            type=3,
-            desc='Cover',
-            data=rawAlbumArt
-        )
-        audioFile.save(v2_version=3)
+        AlbumCover = Picture()
+        AlbumCover.mime=u'image/jpeg'
+        AlbumCover.type=3
+        AlbumCover.desc=u'Cover'
+        AlbumCover.data=rawAlbumArt
+        rawAlbumCover = AlbumCover.write()
+        encodedAlbumArt = base64.b64encode(rawAlbumCover)
+        vcommentAlbumArt = encodedAlbumArt.decode("ascii")
+        audioFile['metadata_block_picture'] = [vcommentAlbumArt]
+        audioFile.save()
 
     def close(self) -> None:
         '''
